@@ -10,7 +10,7 @@
 #include <linux/module.h>
 
 #define DEVICE_NAME "keylogger"
-#define MAP_SIZE 128
+#define MAP_SIZE 256
 #define MAX_BUFFER_SIZE 1024
 
 #define IOCTL_GET_BUFFER_SIZE _IOR('k', 1, int)
@@ -21,8 +21,8 @@
 extern char map[MAP_SIZE];
 extern char shift_map[MAP_SIZE];
 
-extern struct class *keylogger_class;
-extern struct device *keylogger_device;
+static int allocate_buffer(int size);
+static void free_buffer(void);
 
 static long keylogger_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg);
@@ -34,7 +34,4 @@ static void keylogger_event_handler(struct input_handle *handle,
 				    unsigned int type, unsigned int code,
 				    int value);
 
-static int allocate_buffer(int size);
-static void free_buffer(void);
-
-#endif
+#endif /* KEYLOGGER_H */
