@@ -27,8 +27,6 @@ make clean  # clear build folder with module
 lsmod | grep keylogger  # check if module is disabled
 ```
 
-
-
 ## How to use the scripts
 To use scripts to support the keylogger module, build them:
 ```bash
