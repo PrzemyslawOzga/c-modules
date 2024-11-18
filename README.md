@@ -1,3 +1,3 @@
-# KERNEL MODULES FOR LEARNING REPO
+# KERNEL MODULES
 
 Kernel modules written in C for learning purposes.
